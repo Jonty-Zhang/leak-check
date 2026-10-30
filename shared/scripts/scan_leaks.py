@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """扫一遍论文 / 课程作业 / 报告，找出交上去会露馅或一眼不对的句子。
 
-    scan_leaks.py 论文.docx [更多文件 ...] [--json] [--ignore CODE ...] [--format md]
+    scan_leaks.py 论文.docx [更多文件 ...] [--json] [--ignore CODE ...] [--format md] [--no-style]
     scan_leaks.py 论文.docx --dump      # 按同一套段号输出全文，供通读和 fix_docx.py 定位
     cat 草稿.txt | scan_leaks.py -
 
@@ -13,6 +13,8 @@
         Markdown / LaTeX 残留、Word 批注与未接受的修订
   硬伤  图表编号断裂或重复、正文引用了不存在的图表、引用编号超出参考文献表、
         “错误！未找到引用源”、标题编号跳号、空章节、重复段落、括号不配对、前后数量不一致
+  AI 味 套话词汇、“综上所述”泛滥、三段式排比、节末升华句、让步式自贬、破折号连用、
+        空洞的乐观结尾。只报 WARN，按全文出现次数和篇幅给阈值，同类合成一条；--no-style 关掉
 
 ERROR = 基本可以确定要改；WARN = 要结合上下文判断。
 退出码：有 ERROR 为 1，否则 0；文件读不了为 2。
@@ -48,6 +50,7 @@ CATEGORY = {
     "CITE": "参考文献",
     "STRUCT": "结构问题",
     "DOCX": "Word 残留",
+    "STYLE": "AI 味",
 }
 
 SUGGEST = {
@@ -65,6 +68,13 @@ SUGGEST = {
     "LATEX": "改成 Word 公式（或 pandoc 转换），不要留 LaTeX 源码",
     "BROKEN_FIELD": "交叉引用断了：在 Word 里重新插入交叉引用，或改成正确的编号后更新域（全选按 F9）",
     "BROKEN_MARK": "补上真实的引用或编号；找不到出处就删掉这句话",
+    "STYLE_WORD": "删掉套话，或换成它背后的具体内容：“具有重要意义”→说出意义是什么；“深入探讨”→“分析”；“值得注意的是”→直接说那件事",
+    "STYLE_SUMUP": "全文留一处（放在结论开头），其余删掉这几个字，直接写结论",
+    "STYLE_TRIAD": "不必凑满三项：改成实际的两项，或者给每一项说出具体内容、数值",
+    "STYLE_ELEVATE": "删掉节末的升华句，一节讲完就停；意义留到结论里具体地写",
+    "STYLE_CONCEDE": "正面写选择和理由：“更好的做法是 X，但为了简便采用 Y”→“采用 Y，原因是……”；“水平有限，难免疏漏”整句删",
+    "STYLE_DASH": "大多数破折号改成逗号、冒号或句号，全文留两三处",
+    "STYLE_ENDING": "把空泛的展望换成下一步具体要做的事；没有就删掉这句",
 }
 
 
@@ -923,9 +933,228 @@ def check_docx_parts(doc, ignore):
             add(doc, WARN, "DOCX_HIDDEN", "DOCX", "整个文档", "", f"有 {n} 处隐藏文字，打印或别人打开“显示隐藏文字”时会露出来")
 
 
+# ---------------------------------------------------------------- AI 味
+
+# 单独一处都不算问题，“满篇都是”才是。所以全部只报 WARN，按全文次数过阈值才报，
+# 同一类合成一条并列出所有位置。阈值 = 基数 + 每万字增加的量，见 style_limit。
+# 清单和每一类“什么时候没问题”见 references/ai-style.md。
+
+STYLE_WORDS = [
+    # (显示名, 正则)
+    ("至关重要/举足轻重/不可或缺", r"至关重要|举足轻重|不可或缺|不可忽视"),
+    ("深入探讨/深入分析", r"深入(探讨|研究|分析|剖析|探究|挖掘)|深度(剖析|挖掘|解析)"),
+    ("赋能/助力/抓手", r"赋能|助力|抓手"),
+    ("彰显/凸显/标志着", r"彰显|凸显|标志着"),
+    ("具有重要意义", r"具有(十分|非常|极其|极为)?(重大|重要|深远|深刻|积极)(的)?(现实|理论|实践|指导)?(意义|价值)|意义(重大|深远)"),
+    ("奠定基础/有力支撑", r"奠定了?.{0,8}基础|(提供|给予)了?.{0,4}(有力|坚实|重要|可靠)(的)?(支撑|保障|支持)"),
+    ("发挥重要作用", r"(扮演|发挥)(着|了)?.{0,4}(至关重要|举足轻重|关键|重要|核心|不可替代)(的)?(角色|作用)"),
+    ("值得注意的是", r"值得(注意|一提|关注|强调)的是|需要(指出|强调|说明)的是|不难(发现|看出)"),
+    ("众所周知/毋庸置疑", r"众所周知|毋庸置疑|不言而喻|显而易见"),
+    ("全方位/多维度/深度融合", r"全方位|多维度|多层次|深度融合|有机结合|有机统一"),
+    ("新篇章/新活力", r"新篇章|新征程|新高度|新活力|注入(新的?)?(活力|动力)|画卷|织就|宏伟蓝图"),
+    ("不仅是……更是……", r"不(仅|只|单)(仅)?是.{1,24}?[，,]?\s*(更|而|也)是"),
+    ("段首“此外/与此同时”", r"^\s*(此外|另外|与此同时)[，,]"),
+]
+
+SUMUP_RX = re.compile(r"综上所述|总而言之|总的来说|总之|总体而言|综合来看|一言以蔽之")
+# 解题里的“综上所述，答案为 B”不算；题目解析类文档整篇不查这一项
+SUMUP_ANSWER = re.compile(r"本题|答案|选[A-DＡ-Ｄ]|选项|[A-D]项|取值范围|[=＝<>≤≥∈]")
+SOLUTION_MARK = re.compile(r"【(答案|解析|详解|分析|点睛|解答)】|故选[A-DＡ-Ｄ]|故答案为|^\s*解[:：]")
+
+TRIAD_ADJ = (r"(高效|准确|精准|精确|稳定|可靠|便捷|快速|智能|安全|灵活|全面|系统|科学|规范|合理|完善|简洁|清晰|直观|"
+             r"实用|新颖|丰富|深入|严谨|有效|先进|绿色|低碳|环保|开放|共享|协同|创新|多元|包容|友好|舒适|健康|和谐|"
+             r"可持续|高质量|个性化|智能化|数字化|信息化|规范化|标准化|系统化|精细化|多样化|便捷化)")
+TRIAD_PREFIX = (r"(更加|更为|更|进一步|不断|全面|持续|切实|提升了?|提高了?|增强了?|促进了?|推动了?|实现了?|培养了?|"
+                r"锻炼了?|加深了?|拓宽了?|拓展了?|深化了?|丰富了?|激发了?|有助于|让|使)")
+TRIAD_VERB = r"(锻炼|培养|加深|提升|提高|增强|拓宽|拓展|丰富|激发|深化|巩固|掌握|学会|收获|认识到|体会到|理解)了"
+TRIAD_RULES = [
+    re.compile(rf"{TRIAD_ADJ}[、，,]\s*(更加|更|且)?{TRIAD_ADJ}[、，,]?\s*(和|与|及|以及|且|又|而)?(更加|更)?{TRIAD_ADJ}"),
+    re.compile(rf"{TRIAD_PREFIX}[\u4e00-\u9fa5]{{1,8}}[、，,；;]\s*\1[\u4e00-\u9fa5]{{1,8}}[、，,；;]?\s*(和|与|及|以及|并|还|更)?\1"),
+    re.compile(rf"{TRIAD_VERB}[\u4e00-\u9fa5]{{1,10}}[、，,；;]\s*{TRIAD_VERB}[\u4e00-\u9fa5]{{1,10}}[、，,；;]\s*(也|还|并|更)?{TRIAD_VERB}"),
+]
+
+ELEVATE_RX = re.compile(
+    r"(具有|有着|富有)(十分|非常|极其|极为)?(重大|重要|深远|深刻|积极|现实)?(的)?(现实|理论|实践|指导)?(意义|价值)|意义(重大|深远)"
+    r"|(奠定|夯实)了?.{0,8}基础|(提供|带来|给予)了?.{0,10}(新的|有力|重要|坚实|宝贵|有益)?(的)?(思路|视角|启示|借鉴|支撑|保障|参考|方向)"
+    r"|(彰显|凸显|体现|展现)(出|了)?.{0,14}(重要性|价值|意义|魅力|力量|精神|担当|优势|潜力)"
+    r"|(推动|促进|助力|赋能|引领).{0,14}(发展|进步|转型|升级|未来|变革)|(必将|势必|终将|定将)"
+    r"|未来可期|前景(广阔|光明|可观|无限)|不(仅|只)(仅)?是.{1,24}?(更|而)是|这(正|也)是.{0,16}(缩影|体现|写照|意义所在)")
+ELEVATE_SKIP_HEAD = re.compile(r"结论|总结|结语|小结|展望|致谢|摘要|心得|体会|感想|收获|反思|Abstract|Conclusion|Summary", re.I)
+
+CONCEDE_RULES = [
+    (re.compile(r"(更好|更优|更理想|更合理|更准确|更严谨)的(做法|方法|方案|选择|处理|办法)(是|应该是|应当是|应是).{0,40}?(但|不过|然而|只是)"),
+     "“更好的做法是……但……”"),
+    (re.compile(r"理想(情况下|状态下|的做法|的方案)?.{0,30}?(应当|应该|应|需要|最好).{0,30}?(但|不过|然而|限于|由于|受限于)"),
+     "“理想情况下应……但限于……”"),
+    (re.compile(r"(为了|为|出于)(简便|简单|方便|省事|简化)(起见)?.{0,6}(本文|这里|此处|我们|笔者|本实验|本报告)?.{0,4}(只|仅|直接|暂且|选择|采用|使用)"
+                r"(?=.{0,30}(而不是|而非|没有采用|未采用|没有使用|未使用))"),
+     "“为了简便只……而不是……”"),
+    (re.compile(r"严格(来说|地说|意义上)?.{0,20}?(应该|应当|需要|应).{0,30}?(这里|此处|本文|本实验)(只|仅|直接|近似|简化|粗略)"),
+     "“严格来说应……这里只……”"),
+    (re.compile(r"(虽然|尽管)(这种|该|本文的?|此|这个)?(方法|做法|方案|模型|处理)(比较|较为|很|相对|过于|有些)?(简单|粗糙|简陋|粗略|初级)"),
+     "“这种方法虽然简单，但……”"),
+    (re.compile(r"(本人|笔者|作者|本文|自己)的?(水平|能力|学识|知识)(有限|不足)|才疏学浅|(时间|时间较为|时间比较)仓促|难免(存在|有)?(疏漏|不足|错误|纰漏|不妥)|恳请.{0,6}(批评指正|指正|斧正)"),
+     "“水平有限，难免疏漏”"),
+]
+
+ENDING_RX = re.compile(
+    r"未来可期|前景(十分|非常)?(广阔|光明|无限|可观)|广阔的?(应用|发展)?前景|大有可为|值得期待|必将|定将"
+    r"|相信(在|随着|未来|通过|经过|只要)|让我们(一起|携手|共同)|携手|迈向|开创.{0,8}新|新篇章|新征程|美好(的)?(未来|明天|生活)"
+    r"|无限(可能|潜力)|潜力巨大|充满(信心|希望|期待)|任重道远|砥砺前行|行稳致远|不断(前进|进步|前行|攀登)|继续(努力|前行|奋斗)"
+    r"|更加(美好|辉煌|光明)|贡献(自己的?|一份)?(力量|智慧)")
+
+# 至少一侧是中文才算：不算“1990—2000 年”“3—5 页”这类范围，也不算方程式里当箭头用的“——”
+DASH_RX = re.compile(r"(?<=[\u4e00-\u9fa5，。、：”）》])\s?——|——\s?(?=[\u4e00-\u9fa5“（《])"
+                     r"|(?<=[\u4e00-\u9fa5，。、”）])\s?—\s?(?=[\u4e00-\u9fa5“（])|(?<=[\u4e00-\u9fa5])\s?--\s?(?=[\u4e00-\u9fa5])")
+
+
+def style_units(doc):
+    """参与 AI 味统计的段落：正文段落（不含标题、题注、表格、代码、页眉页脚、参考文献）。"""
+    return [u for u in doc.units if u.kind == "para" and not u.in_refs and u.text.strip()]
+
+
+def style_limit(chars, base, per10k):
+    return base + int(chars * per10k / 10000)
+
+
+def _where(units, cap=20):
+    seen, out = set(), []
+    for u in units:
+        if u.loc not in seen:
+            seen.add(u.loc)
+            out.append(u)
+    names = "、".join(re.sub(r"^第 (\d+) (段|行)$", r"\1", u.loc) for u in out[:cap])
+    unit_word = "行" if out and out[0].loc.endswith("行") else "段"
+    tail = f" 等 {len(out)} 处" if len(out) > cap else ""
+    if all(re.match(r"^第 \d+ (段|行)$", u.loc) for u in out[:cap]):
+        return f"第 {names} {unit_word}{tail}"
+    return "、".join(u.loc for u in out[:cap]) + tail
+
+
+def _style_add(doc, code, hits, problem):
+    """hits: [(unit, match)]，合成一条 WARN，原句取第一处。"""
+    u, m = hits[0]
+    add(doc, WARN, code, "STYLE", u, excerpt(u.text, m.start(), m.end()),
+        f"{problem}。位置：{_where([h[0] for h in hits])}", code)
+
+
+def check_style(doc, ignore):
+    units = style_units(doc)
+    chars = sum(len(re.findall(r"[\u4e00-\u9fa5]", u.text)) for u in units)
+    if chars < 200:
+        return  # 太短，没有“泛滥”可言
+
+    def on(code):
+        return code not in ignore
+
+    if on("STYLE_WORD"):
+        hits, counts = [], defaultdict(int)
+        for name, pattern in STYLE_WORDS:
+            rx = re.compile(pattern)
+            for u in units:
+                for m in rx.finditer(u.text):
+                    hits.append((u, m))
+                    counts[name] += 1
+        limit = style_limit(chars, 4, 3)
+        if len(hits) >= limit:
+            hits.sort(key=lambda h: (h[0].n, h[1].start()))
+            words = "、".join(f"{k}×{v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1]))
+            _style_add(doc, "STYLE_WORD", hits,
+                       f"套话词全文 {len(hits)} 处（{words}），按本文篇幅（约 {chars} 字）超过 {limit} 处就算泛滥")
+
+    if on("STYLE_SUMUP") and sum(bool(SOLUTION_MARK.search(u.text)) for u in units) < 3:
+        hits = [(u, m) for u in units for m in SUMUP_RX.finditer(u.text)
+                if not SUMUP_ANSWER.search(excerpt(u.text, m.start(), m.end()))]
+        limit = style_limit(chars, 2, 1)
+        if len(hits) >= limit:
+            _style_add(doc, "STYLE_SUMUP", hits,
+                       f"“综上所述/总而言之/总之”一类总结词全文 {len(hits)} 处，一篇一般只在结论开头用一次")
+
+    if on("STYLE_TRIAD"):
+        hits = []
+        for u in units:
+            for rx in TRIAD_RULES:
+                m = rx.search(u.text)
+                if m:
+                    hits.append((u, m))
+                    break
+        limit = style_limit(chars, 3, 2)
+        if len(hits) >= limit:
+            _style_add(doc, "STYLE_TRIAD", hits,
+                       f"三段式排比（“高效、准确、稳定”“提升了……提升了……提升了……”）全文 {len(hits)} 处")
+
+    if on("STYLE_ELEVATE"):
+        heads = [i for i, u in enumerate(doc.units) if u.kind == "heading" and u.text.strip()]
+        sections, hits = 0, []
+        for k, i in enumerate(heads):
+            end = heads[k + 1] if k + 1 < len(heads) else len(doc.units)
+            if ELEVATE_SKIP_HEAD.search(doc.units[i].text) or REF_HEAD.match(doc.units[i].text.strip("# ")):
+                continue
+            body = [u for u in doc.units[i + 1:end] if u.kind == "para" and not u.in_refs and u.text.strip()]
+            if not body:
+                continue
+            sections += 1
+            last = body[-1].text.strip()
+            sents = [s for s in re.split(r"(?<=[。！？!?])", last) if s.strip()]
+            tail = sents[-1] if sents else last
+            m = ELEVATE_RX.search(tail)
+            if m:
+                hits.append((body[-1], _Shift(m, last.rfind(tail) + len(body[-1].text) - len(body[-1].text.lstrip()))))
+        if len(hits) >= 2 and len(hits) >= sections * 0.25:
+            _style_add(doc, "STYLE_ELEVATE", hits,
+                       f"{sections} 个小节里有 {len(hits)} 个以升华句收尾（“具有重要意义”“为……奠定了基础”“彰显了……”）")
+
+    if on("STYLE_CONCEDE"):
+        hits, kinds = [], []
+        for u in units:
+            for rx, name in CONCEDE_RULES:
+                m = rx.search(u.text)
+                if m:
+                    hits.append((u, m))
+                    if name not in kinds:
+                        kinds.append(name)
+                    break
+        if hits:
+            _style_add(doc, "STYLE_CONCEDE", hits,
+                       f"让步式自贬 {len(hits)} 处（{'、'.join(kinds)}）：先说别的更好再说自己选了差的，或者自谦套话，读起来像在找借口")
+
+    if on("STYLE_DASH"):
+        hits = [(u, m) for u in units for m in DASH_RX.finditer(u.text)]
+        limit = style_limit(chars, 4, 2)
+        if len(hits) >= limit:
+            _style_add(doc, "STYLE_DASH", hits,
+                       f"破折号全文 {len(hits)} 处，一篇里两三处为宜；连着用是 AI 制造节奏的典型写法")
+
+    if on("STYLE_ENDING"):
+        stop = len(doc.units)
+        for i, u in enumerate(doc.units):
+            t = u.text.strip("# ").strip()
+            if u.in_refs or (REF_HEAD.match(t) or AFTER_REFS.match(t)) and len(t) <= 20:
+                stop = i
+                break
+        tail_units = [u for u in doc.units[:stop] if u.kind == "para" and u.text.strip()][-3:]
+        hits = [(u, m) for u in tail_units for m in [ENDING_RX.search(u.text)] if m]
+        if hits:
+            _style_add(doc, "STYLE_ENDING", hits,
+                       "全文以空泛的乐观展望收尾（“未来可期”“前景广阔”“相信……必将……”），没有信息量")
+
+
+class _Shift:
+    """把在子串上的匹配位置平移回整段，供 excerpt 定位。"""
+
+    def __init__(self, m, off):
+        self._s, self._e = m.start() + off, m.end() + off
+
+    def start(self):
+        return self._s
+
+    def end(self):
+        return self._e
+
+
 # ---------------------------------------------------------------- 汇总输出
 
-def scan(path, fmt=None, ignore=()):
+def scan(path, fmt=None, ignore=(), style=True):
     doc = load(path, fmt)
     ignore = set(ignore)
     mark_refs(doc)
@@ -937,10 +1166,12 @@ def scan(path, fmt=None, ignore=()):
     check_citations(doc, ignore)
     check_misc(doc, ignore)
     check_docx_parts(doc, ignore)
-    # 同一句话命中多条规则时合成一条：级别取最严重的，原因都列出来
+    if style:
+        check_style(doc, ignore)
+    # 同一句话命中多条规则时合成一条：级别取最严重的，原因都列出来（AI 味是全文汇总，不和别的合并）
     merged = {}
     for f in doc.findings:
-        k = (f.loc, f.excerpt)
+        k = (f.loc, f.excerpt, f.code if f.code.startswith("STYLE_") else "")
         if k not in merged:
             merged[k] = f
             continue
@@ -951,7 +1182,7 @@ def scan(path, fmt=None, ignore=()):
             g.problem += "；" + f.problem
         if f.severity == ERROR and g.severity == WARN:
             g.severity, g.category, g.suggestion = ERROR, f.category, f.suggestion or g.suggestion
-    doc.findings = sorted(merged.values(), key=lambda f: (f.severity != ERROR, f.n == 0, f.n))
+    doc.findings = sorted(merged.values(), key=lambda f: (f.severity != ERROR, f.code.startswith("STYLE_"), f.n == 0, f.n))
     return doc
 
 
@@ -980,6 +1211,7 @@ def main(argv=None):
     ap.add_argument("--format", help="强制按某种格式读（md/txt/tex/docx/pdf）")
     ap.add_argument("--json", action="store_true", help="输出 JSON")
     ap.add_argument("--ignore", nargs="*", default=[], help="忽略的规则代码，如 CITE_ORDER DUP_PARA")
+    ap.add_argument("--no-style", action="store_true", help="不查 AI 味（STYLE_* 规则）")
     ap.add_argument("--dump", action="store_true", help="不检查，按扫描用的段号/行号输出全文，供通读和定位")
     args = ap.parse_args(argv)
     if args.dump:
@@ -997,7 +1229,7 @@ def main(argv=None):
         if path != "-" and not Path(path).exists():
             print(f"找不到文件：{path}", file=sys.stderr)
             return 2
-        doc = scan(path, args.format, args.ignore)
+        doc = scan(path, args.format, args.ignore, style=not args.no_style)
         any_error |= any(f.severity == ERROR for f in doc.findings)
         results.append(doc)
     if args.json:

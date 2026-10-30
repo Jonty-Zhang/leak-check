@@ -65,6 +65,64 @@ def test_user_domain():
     check("META_USER" in codes(doc, "WARN"), "降为 WARN 提醒人工看")
 
 
+STYLE_CODES = {"STYLE_WORD", "STYLE_SUMUP", "STYLE_TRIAD", "STYLE_ELEVATE", "STYLE_CONCEDE", "STYLE_DASH", "STYLE_ENDING"}
+
+
+def test_ai_style(tmp):
+    print("ai-style.md：AI 味各类都报 WARN，且同类合成一条")
+    doc = scan_leaks.scan(str(SAMPLES / "ai-style.md"))
+    style = [f for f in doc.findings if f.code.startswith("STYLE_")]
+    missing = STYLE_CODES - codes(doc)
+    check(not missing, f"七类都触发（缺：{missing or '无'}）")
+    check(all(f.severity == "WARN" for f in style), "AI 味只报 WARN")
+    check(len(style) == len({f.code for f in style}), f"每类只一条（实际 {[f.code for f in style]}）")
+    check(not codes(doc, "ERROR"), "不产生 ERROR")
+    word = next((f for f in style if f.code == "STYLE_WORD"), None)
+    check(word and "第 5、9、13、17 行" in word.problem, "汇总条目列出全部位置")
+
+    print("AI 味的阈值：零星一两处不报")
+    light = tmp / "light.md"
+    light.write_text(
+        "## 1 引言\n\n"
+        "宿舍用电管理至关重要。本文在 6 间宿舍布置电流采集节点，每 10 秒记录一次电流，连续采集 14 天。"
+        "采集节点由 ESP32 和电流互感器组成，网关通过 MQTT 把数据上传到服务器，服务器按房间汇总成小时用电量。"
+        "数据缺失的时段用前后两个小时的均值补齐，共补齐 37 个小时。\n\n"
+        "## 2 结果\n\n"
+        "平均日用电量为 3.2 kWh，夜间待机功耗占 18%——主要来自饮水机和路由器。工作日和周末的日用电量相差 0.4 kWh，"
+        "差异主要出现在晚上八点到十一点。空调开启的日子平均多用 1.9 kWh，占当天用电的一半以上。"
+        "饮水机夜间保温约占待机功耗的六成，路由器约占三成，其余来自充电器和显示器。\n\n"
+        "## 3 结论\n\n"
+        "综上所述，夜间待机是可以优化的环节。下一步在 20 间宿舍扩大采样，并给饮水机加装定时开关，比较加装前后的夜间用电。\n",
+        encoding="utf-8")
+    doc = scan_leaks.scan(str(light))
+    check(not codes(doc) & STYLE_CODES, f"0 条 AI 味（实际 {codes(doc) & STYLE_CODES}）")
+
+    print("AI 味的例外：专业术语、数字范围、题解格式、数学里的“为简便起见”")
+    ok = tmp / "ok.md"
+    ok.write_text(
+        "## 1 控制系统\n\n"
+        "开环控制不测量输出，闭环控制把输出测回来与目标比较。闭环系统的稳定性取决于闭环极点的位置，"
+        "本实验比较了开环与闭环两种接法，闭环接法下稳态误差从 12% 降到 2%。闭环增益取 5，带宽约 3 Hz。\n\n"
+        "1990—2000 年的数据见第 3—5 页。反应式写作 2H₂+O₂——2H₂O。为简便起见，记 a = x + y。"
+        "综上所述，答案为 B。综上所述，a 的取值范围是 a > 2。综上所述，正确的是 C 项。"
+        "实验分三组进行，分别测量电阻、电容、电感的频率响应，每组重复 3 次，取平均值作为结果，"
+        "测量频率从 100 Hz 到 10 kHz，每个十倍频程取 10 个点，共 30 个频点，测得的幅频曲线见图 1。"
+        "电阻的响应在全频段基本平坦，电容和电感分别在高频和低频段出现明显衰减，与理论预期一致。\n",
+        encoding="utf-8")
+    doc = scan_leaks.scan(str(ok))
+    check(not codes(doc) & STYLE_CODES, f"0 条 AI 味（实际 {codes(doc) & STYLE_CODES}）")
+
+    print("--no-style 和 --ignore STYLE_*")
+    doc = scan_leaks.scan(str(SAMPLES / "ai-style.md"), style=False)
+    check(not codes(doc) & STYLE_CODES, "scan(style=False) 不查 AI 味")
+    doc = scan_leaks.scan(str(SAMPLES / "ai-style.md"), ignore=["STYLE_DASH"])
+    check("STYLE_DASH" not in codes(doc) and "STYLE_WORD" in codes(doc), "--ignore 可以单独关掉一项")
+    r = subprocess.run([sys.executable, str(HERE / "scan_leaks.py"), str(SAMPLES / "ai-style.md"), "--no-style", "--json"],
+                       capture_output=True, text=True)
+    data = json.loads(r.stdout)
+    check(r.returncode == 0 and data[0]["warnings"] == 0, "命令行 --no-style 生效，只有 WARN 时退出码为 0")
+
+
 def test_tex_and_stdin(tmp):
     print("tex / 标准输入")
     tex = tmp / "a.tex"
@@ -167,6 +225,7 @@ def main():
         test_leaky_md()
         test_clean_md()
         test_user_domain()
+        test_ai_style(tmp)
         test_tex_and_stdin(tmp)
         test_docx(tmp)
     print("\n全部通过" if not failed else f"\n{failed} 项失败")

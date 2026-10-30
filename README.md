@@ -29,6 +29,18 @@
 - "共回收问卷 200 份"和"共回收问卷 180 份"
 - 括号不配对；引号写成两个右引号 ”…”
 
+**AI 味**（v2），就是满篇套路、一读就像机器写的：
+
+- 套话词：至关重要 / 赋能 / 深入探讨 / 具有重要意义 / 奠定了坚实基础 / 值得注意的是 / 不仅是……更是……
+- "综上所述""总而言之"一篇用好几次
+- 三段式排比：高效、稳定、可靠 / 提升了……提升了……提升了……
+- 每节末尾一句升华："充分彰显了……的巨大潜力"
+- 让步式自贬：更好的做法是 X，但为了简便本文采用 Y / 本人水平有限，难免疏漏
+- 破折号——连着用——制造节奏
+- 空洞的乐观结尾：前景广阔，未来可期
+
+AI 味只报 WARN。单独一处不算，按全文出现次数和篇幅给阈值，同一类合成一条并列出所有位置；`--no-style` 可以整类关掉。leak-fix 修 AI 味时同样只做最小改动：只动套话，不改观点，不编具体内容。清单和阈值见 [ai-style.md](shared/references/ai-style.md)。
+
 脚本能查出能靠字符串和结构判断的部分；同义变体和语义矛盾（结论与正文对不上、可疑文献、残句、时间穿越等），由 AI 按 [semantic-checklist.md](shared/references/semantic-checklist.md) 逐句通读找出。完整清单和每一类的"什么时候其实没问题"写在 [patterns.md](shared/references/patterns.md) 里。
 
 ## 误报控制
@@ -36,6 +48,7 @@
 - 需求分析、产品设计类文章里，"用户希望按价格筛选"是正常写法。脚本发现全文有 3 段以上把"用户"当领域词用时，会把"用户……"类命中降为 WARN。但如果同一句话还提到了报告本身，比如"用户说这一节要写详细，所以本报告分三点展开"，仍然报 ERROR。
 - 以下写法不会误报：待定系数法、方向待定、改进版 A* 算法、限于篇幅省略推导（详见文献[3]）、参考文献里的（第 2 版）、C 代码里的 `arr[5]`、讲义里以 `#` 开头的运算符说明、"1）2）3）"式编号。
 - 同一句话命中多条规则时，合并成一条；同类问题多处出现时，汇总成一条。
+- AI 味不查"闭环"之类的专业术语、"1990—2000 年"这类范围号、方程式里的"——"；题目解析里的"综上所述，答案为 B"不算总结套话；标题是结论、心得、展望的小节不查升华句。
 
 ## 安装
 
@@ -59,6 +72,7 @@ brew install poppler   # 可选：查 PDF 需要 pdftotext
 python3 shared/scripts/scan_leaks.py 论文.docx                 # 扫描，有 ERROR 时退出码为 1
 python3 shared/scripts/scan_leaks.py 论文.docx --dump          # 带段号的全文
 python3 shared/scripts/scan_leaks.py a.md b.tex --json         # 多个文件，输出 JSON
+python3 shared/scripts/scan_leaks.py 论文.docx --no-style      # 不查 AI 味
 cat 草稿.txt | python3 shared/scripts/scan_leaks.py -           # 从标准输入读
 python3 shared/scripts/fix_docx.py 论文.docx edits.json --dry-run
 python3 shared/scripts/fix_docx.py 论文.docx edits.json --inplace --accept-revisions --remove-comments
@@ -69,8 +83,8 @@ python3 shared/scripts/selftest.py                             # 自测
 
 ## 路线图
 
-- v1（当前）：雷点和硬伤
-- v2：加入 AI 味检查，包括套话词汇、三段式排比、空洞的升华句、让步式自贬
+- v1：雷点和硬伤
+- v2（当前）：加入 AI 味检查，包括套话词汇、"综上所述"泛滥、三段式排比、节末升华句、让步式自贬、破折号连用、空洞的乐观结尾
 
 ## License
 
