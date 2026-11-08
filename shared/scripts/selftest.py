@@ -219,6 +219,37 @@ def test_docx(tmp):
     check(not any(r.font.highlight_color for para in d.paragraphs for r in para.runs), "高亮已去掉")
 
 
+def test_compromise(tmp):
+    print("妥协外露：借口、bug、到处说、当亮点写都报 ERROR")
+    doc = scan_leaks.scan(str(SAMPLES / "compromise-leaky.md"), style=False)
+    want = {"COMPROMISE_EXCUSE", "COMPROMISE_BUG", "COMPROMISE_SPREAD", "COMPROMISE_EMPHASIS"}
+    check(want <= codes(doc, "ERROR"), f"四类都报 ERROR（缺：{want - codes(doc, 'ERROR') or '无'}）")
+    one = tmp / "one.md"
+    one.write_text("## 3 实验\n\n本次为了简便没有做误差分析。\n", encoding="utf-8")
+    check("COMPROMISE_EXCUSE" in codes(scan_leaks.scan(str(one), style=False), "ERROR"), "“本次为了简便没有……”报 ERROR")
+
+    print("妥协外露的例外：建模假设、说目的、讲别人的研究、专门章节里简短写")
+    doc = scan_leaks.scan(str(SAMPLES / "compromise-ok.md"), style=False)
+    got = {c for c in codes(doc) if c.startswith("COMPROMISE")}
+    check(not got, f"0 条（实际 {got}）")
+
+    long = tmp / "long.md"
+    body = "".join(f"本系统的第 {i} 项功能还不够完善。" for i in range(1, 11))
+    long.write_text(f"## 1 方法\n\n采集节点每 10 秒读一次电流。\n\n## 2 不足与展望\n\n{body}\n", encoding="utf-8")
+    doc = scan_leaks.scan(str(long), style=False)
+    check("COMPROMISE_LONG" in codes(doc, "WARN") and not codes(doc, "ERROR"), "专门章节写太长只报 WARN")
+
+    from docx import Document
+    d = Document()
+    d.add_heading("1 方法", level=1)
+    p = d.add_paragraph("采集节点每 10 秒读一次电流，")
+    p.add_run("本系统目前还不够稳定").bold = True
+    p.add_run("。")
+    path = tmp / "bold.docx"
+    d.save(str(path))
+    check("COMPROMISE_EMPHASIS" in codes(scan_leaks.scan(str(path), style=False), "ERROR"), "Word 里加粗的缺点报 ERROR")
+
+
 def main():
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
@@ -226,6 +257,7 @@ def main():
         test_clean_md()
         test_user_domain()
         test_ai_style(tmp)
+        test_compromise(tmp)
         test_tex_and_stdin(tmp)
         test_docx(tmp)
     print("\n全部通过" if not failed else f"\n{failed} 项失败")

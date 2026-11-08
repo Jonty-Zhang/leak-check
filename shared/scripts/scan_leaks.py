@@ -51,6 +51,7 @@ CATEGORY = {
     "STRUCT": "结构问题",
     "DOCX": "Word 残留",
     "STYLE": "AI 味",
+    "COMPROMISE": "妥协外露",
 }
 
 SUGGEST = {
@@ -75,6 +76,11 @@ SUGGEST = {
     "STYLE_CONCEDE": "正面写选择和理由：“更好的做法是 X，但为了简便采用 Y”→“采用 Y，原因是……”；“水平有限，难免疏漏”整句删",
     "STYLE_DASH": "大多数破折号改成逗号、冒号或句号，全文留两三处",
     "STYLE_ENDING": "把空泛的展望换成下一步具体要做的事；没有就删掉这句",
+    "COMPROMISE_EXCUSE": "删掉借口。选了什么就正面写理由：“为了简便，本次直接用 X”→“采用 X，原因是……”；没做的事若真影响结论，放到“不足与展望”里用一句话写",
+    "COMPROMISE_BUG": "实现过程中的 bug、踩坑、没修好的小问题不写进正文；真影响结果的，换成对结果的客观描述（如“低于 5 ℃ 时读数漂移约 3%”），放到“不足”或“问题与解决”里",
+    "COMPROMISE_SPREAD": "全文的缺点、妥协收拢到一处（“不足与展望”或实验报告的“问题与解决”），2–4 句写完；其他章节的删掉",
+    "COMPROMISE_EMPHASIS": "缺点不加粗、不单独起标题、不用“值得一提的是”引出，平铺直叙一两句就够",
+    "COMPROMISE_LONG": "压缩：只留真正影响结论的 2–4 条，每条一两句，写具体、写下一步",
 }
 
 
@@ -86,6 +92,7 @@ class Unit:
     kind: str = "para"     # para / heading / caption / table / code / meta
     level: int = 0         # 标题级别
     in_refs: bool = False  # 位于参考文献表内
+    bold: str = ""         # 加粗的文字（docx 的粗体 run），查“把缺点当亮点写”用
 
 
 @dataclass
@@ -201,7 +208,12 @@ def read_docx(path, doc):
         if fonts and all(any(m in f for m in MONO) for f in fonts):
             code = True
         kind = "table" if in_table else "heading" if level else "caption" if caption else "code" if code else "para"
-        doc.units.append(Unit(n, f"第 {n} 段" + ("（表格内）" if in_table else ""), text, kind, level))
+        bold = []
+        for r in p.iter(_q("r")):
+            b = r.find(f"{_q('rPr')}/{_q('b')}")
+            if b is not None and b.get(_q("val"), "true").lower() not in ("0", "false", "off"):
+                bold.append("".join(t.text or "" for t in r.iter(_q("t"))))
+        doc.units.append(Unit(n, f"第 {n} 段" + ("（表格内）" if in_table else ""), text, kind, level, bold=" ".join(bold)))
     # 页眉页脚
     for si, section in enumerate(document.sections, 1):
         for label, part in (("页眉", section.header), ("页脚", section.footer)):
@@ -986,9 +998,6 @@ CONCEDE_RULES = [
      "“更好的做法是……但……”"),
     (re.compile(r"理想(情况下|状态下|的做法|的方案)?.{0,30}?(应当|应该|应|需要|最好).{0,30}?(但|不过|然而|限于|由于|受限于)"),
      "“理想情况下应……但限于……”"),
-    (re.compile(r"(为了|为|出于)(简便|简单|方便|省事|简化)(起见)?.{0,6}(本文|这里|此处|我们|笔者|本实验|本报告)?.{0,4}(只|仅|直接|暂且|选择|采用|使用)"
-                r"(?=.{0,30}(而不是|而非|没有采用|未采用|没有使用|未使用))"),
-     "“为了简便只……而不是……”"),
     (re.compile(r"严格(来说|地说|意义上)?.{0,20}?(应该|应当|需要|应).{0,30}?(这里|此处|本文|本实验)(只|仅|直接|近似|简化|粗略)"),
      "“严格来说应……这里只……”"),
     (re.compile(r"(虽然|尽管)(这种|该|本文的?|此|这个)?(方法|做法|方案|模型|处理)(比较|较为|很|相对|过于|有些)?(简单|粗糙|简陋|粗略|初级)"),
@@ -1154,6 +1163,150 @@ class _Shift:
 
 # ---------------------------------------------------------------- 汇总输出
 
+# ---------------------------------------------------------------- 妥协外露
+
+# 这些章节里本来就该写问题和不足：只查篇幅，不逐句报
+ALLOW_HEAD = re.compile(r"不足|局限|展望|改进|问题(与|和|及)?(解决|分析|讨论|处理|对策)?|遇到的问题|反思|心得|体会|感想|收获|讨论|误差|注意事项|风险"
+                        r"|Limitation|Future|Discussion|Reflection", re.I)
+# 专门给自己的缺点开的小节（“误差分析”“问题与解决”是实验报告的正常栏目，不算）
+FLAW_HEAD = re.compile(r"不足|局限|缺陷|缺点|短板|已知问题|待改进|bug|踩坑", re.I)
+
+SELF_MARK = re.compile(r"本文|本研究|本实验|本项目|本系统|本方案|本设计|本模型|本作品|本组|本次|这次|我们|笔者|我(?!国|校|院|省|市)|该系统|该方案|所(设计|实现|搭建|提出)的")
+FLAW_RX = re.compile(
+    r"不足(?!以|为奇|道)|局限(?!于)|缺陷|缺点|短板|弊端|有待(改进|提高|完善|加强|优化)|尚未|仍需|仍有(改进|提升|不足|欠缺)|还不够|不够(完善|准确|全面|充分|理想|稳定|成熟)"
+    r"|欠缺|改进空间|提升空间|未能|没能|(未|没有|并未)(考虑|实现|覆盖|测试|验证|优化|处理|涉及|做)|效果(一般|有限|不佳|不理想|不太好)|精度(有限|不高|一般)"
+    r"|(存在|有)(一定的?|少量|一些)?(误差|偏差|问题|不足)|比较粗糙|较为粗糙|还不完善|不太稳定")
+EXCUSE_HEAD = re.compile(r"(为了|为|出于)(简便|简单|方便|省事|省时|节省时间|赶进度|偷懒)(起见)?")
+EXCUSE_START = re.compile(r"\s*([，,]|本次|这次|这里|此处|本文|本实验|本项目|本报告|我们|笔者|就|先|只|仅|直接|没有|没|未|暂时|暂且)")
+EXCUSE_TRIGGER = re.compile(r"(没有|没|未|并未|暂未|暂时|暂且|只|仅|直接|先|跳过|省略|略过)(?!(取|假设|忽略|视为|看作|记|令|设|近似|认为|定义))")
+MODELING = re.compile(r"假设|忽略|近似|视为|看作|理想化|不计|略去.{0,6}(影响|阻力|损耗)")
+EXCUSE_RX = [
+    re.compile(r"(由于|因为|鉴于|受|碍于|限于)(时间|课时|工期|精力|时间和精力|时间与精力)(有限|紧张|不足|关系|所限|仓促|紧迫|限制|不够|原因)[，, ]?"
+               r"[^。；;！？]{0,18}?(没有|没|未|并未|只|仅|暂|先|跳过|省略|来不及|没来得及|无法)"),
+    re.compile(r"偷了?个?懒|图省事|先凑合|凑合着|将就着|糊弄"),
+    re.compile(r"(本次|这次|这里|此处)(就|先|暂时|暂且)(没有|没|不|只|跳过|省略)"),
+]
+BUG_RX = re.compile(
+    r"(程序|代码|脚本|系统|软件|模型|实现|仿真|界面|网页|小程序|App|APP|固件)(中|里|里面)?(还|目前|仍然|仍|依然)?(存在|有)(一个|一些|几个|个|少量|若干)?(小)?(已知的?)?\s*(bug|漏洞|毛病|小问题)"
+    r"|(一个|几个|个|小)\s*bug|(暂未|尚未|还没|没来得及|还未|暂时没有?)(修复|修好|解决|改好|排查)|偶尔(会)?(崩溃|报错|卡死|闪退|卡顿|出错)"
+    r"|踩(了)?(个|一个|很多|不少|几个)?坑|已知(问题|缺陷|bug)|(先|暂时)(写死|硬编码)", re.I)
+EMPH_RX = re.compile(r"(值得一提|值得注意|值得说明|需要(特别)?(指出|强调|说明|注意)|特别(指出|强调|说明)|必须(承认|指出|说明)|不得不(承认|说))的是")
+
+
+def _sentences(text):
+    start = 0
+    for m in re.finditer(r"[。！？!?；;]|$", text):
+        seg = text[start:m.end()]
+        if seg.strip():
+            yield start, seg
+        start = m.end()
+        if m.end() >= len(text):
+            break
+
+
+def _find_excuse(sent):
+    if MODELING.search(sent):
+        return None
+    for m in EXCUSE_HEAD.finditer(sent):
+        tail = sent[m.end():]
+        if not EXCUSE_START.match(tail):
+            continue  # “为了方便用户”“为方便叙述”是在说目的，不是找借口
+        t = EXCUSE_TRIGGER.search(tail[:24])
+        if t:
+            return m.start(), m.end() + t.end()
+    for rx in EXCUSE_RX:
+        m = rx.search(sent)
+        if m:
+            return m.start(), m.end()
+    return None
+
+
+def _sections(doc):
+    """每个单元所在的章节（用于统计分布）和是否在“不足/问题/反思”类章节里。"""
+    heads = [u for u in doc.units if u.kind == "heading" and u.text.strip()]
+    top = min((u.level for u in heads), default=1)
+    stack, info = [], {}
+    chapter = None
+    for u in doc.units:
+        if u.kind == "heading" and u.text.strip():
+            stack = [h for h in stack if h.level < u.level] + [u]
+            if u.level <= top + 1:
+                chapter = u
+        allowed = any(ALLOW_HEAD.search(re.sub(r"^#+\s*", "", h.text)) for h in stack)
+        info[id(u)] = (chapter, allowed)
+    return info, bool(heads)
+
+
+def check_compromise(doc, ignore):
+    if all(c in ignore for c in ("COMPROMISE_EXCUSE", "COMPROMISE_BUG", "COMPROMISE_SPREAD", "COMPROMISE_EMPHASIS", "COMPROMISE_LONG")):
+        return
+    info, has_heads = _sections(doc)
+    units = [u for u in doc.units if u.kind in ("para", "table") and not u.in_refs and u.text.strip()]
+    outside, inside = [], []          # 不在 / 在“不足”类章节里的缺点句：(unit, start, end, kind)
+    for u in units:
+        chapter, allowed = info[id(u)]
+        for off, sent in _sentences(u.text):
+            ex = _find_excuse(sent)
+            bug = BUG_RX.search(sent)
+            flaw = FLAW_RX.search(sent) if SELF_MARK.search(sent) else None
+            if ex:
+                a, b = ex
+                if "COMPROMISE_EXCUSE" not in ignore:
+                    add(doc, ERROR, "COMPROMISE_EXCUSE", "COMPROMISE", u, excerpt(u.text, off + a, off + b),
+                        "“为了简便/时间关系，本次没有……”：把偷工减料的过程写进了正文，读起来像在找借口", "COMPROMISE_EXCUSE")
+                hit = (u, off + a, off + b, "excuse")
+            elif bug:
+                if not allowed and "COMPROMISE_BUG" not in ignore:
+                    add(doc, ERROR, "COMPROMISE_BUG", "COMPROMISE", u, excerpt(u.text, off + bug.start(), off + bug.end()),
+                        "把实现过程中的 bug / 踩坑 / 没修好的问题写进了正文", "COMPROMISE_BUG")
+                hit = (u, off + bug.start(), off + bug.end(), "bug")
+            elif flaw:
+                hit = (u, off + flaw.start(), off + flaw.end(), "flaw")
+            else:
+                continue
+            (inside if allowed else outside).append(hit)
+            em = EMPH_RX.search(sent)
+            if em and "COMPROMISE_EMPHASIS" not in ignore:
+                add(doc, ERROR, "COMPROMISE_EMPHASIS", "COMPROMISE", u, excerpt(u.text, off + em.start(), off + em.end()),
+                    "用“值得一提的是/需要特别指出的是”引出自己的缺点，像在强调亮点", "COMPROMISE_EMPHASIS")
+
+    if "COMPROMISE_EMPHASIS" not in ignore:
+        for u in units:
+            bolds = re.findall(r"\*\*([^*\n]+)\*\*", u.text) if doc.fmt == "md" else ([u.bold] if u.bold.strip() else [])
+            for btxt in bolds:
+                m = FLAW_RX.search(btxt) or BUG_RX.search(btxt)
+                if m and (SELF_MARK.search(u.text) or BUG_RX.search(btxt)):
+                    add(doc, ERROR, "COMPROMISE_EMPHASIS", "COMPROMISE", u, btxt.strip()[:60],
+                        "把自己的缺点加粗了，像在突出亮点", "COMPROMISE_EMPHASIS")
+                    break
+        flaw_heads = [u for u in doc.units if u.kind == "heading" and FLAW_HEAD.search(re.sub(r"^#+\s*", "", u.text))]
+        if len(flaw_heads) >= 2:
+            add(doc, ERROR, "COMPROMISE_EMPHASIS", "COMPROMISE", flaw_heads[1], re.sub(r"^#+\s*", "", flaw_heads[1].text).strip()[:50],
+                f"为缺点单独开了 {len(flaw_heads)} 个小节（{'、'.join(re.sub(r'^#+\s*', '', h.text).strip()[:12] for h in flaw_heads[:6])}），"
+                f"像在逐章展示缺点；合并成一处", "COMPROMISE_EMPHASIS")
+
+    if "COMPROMISE_SPREAD" not in ignore and outside:
+        chapters = []
+        for u, *_ in outside:
+            c = info[id(u)][0]
+            if c is not None and c not in chapters:
+                chapters.append(c)
+        chars = sum(len(re.findall(r"[一-龥]", u.text)) for u in units)
+        dense = len(outside) >= max(5, chars // 1500)
+        if (has_heads and len(chapters) >= 3) or dense:
+            u, a, b, _ = outside[0]
+            names = "、".join(re.sub(r"^#+\s*", "", c.text).strip()[:12] for c in chapters[:6])
+            where = f"散在 {len(chapters)} 个章节（{names}）" if len(chapters) >= 2 else "集中在正文里"
+            add(doc, ERROR, "COMPROMISE_SPREAD", "COMPROMISE", u, excerpt(u.text, a, b),
+                f"缺点、妥协写了 {len(outside)} 处，{where}，到处都在说自己哪里没做好。位置：{_where([h[0] for h in outside])}",
+                "COMPROMISE_SPREAD")
+
+    if "COMPROMISE_LONG" not in ignore and len(inside) > 8:
+        u, a, b, _ = inside[0]
+        add(doc, WARN, "COMPROMISE_LONG", "COMPROMISE", u, excerpt(u.text, a, b),
+            f"“不足/问题”类章节里写了 {len(inside)} 句缺点，篇幅偏大", "COMPROMISE_LONG")
+
+
 def scan(path, fmt=None, ignore=(), style=True):
     doc = load(path, fmt)
     ignore = set(ignore)
@@ -1166,6 +1319,7 @@ def scan(path, fmt=None, ignore=(), style=True):
     check_citations(doc, ignore)
     check_misc(doc, ignore)
     check_docx_parts(doc, ignore)
+    check_compromise(doc, ignore)
     if style:
         check_style(doc, ignore)
     # 同一句话命中多条规则时合成一条：级别取最严重的，原因都列出来（AI 味是全文汇总，不和别的合并）
